@@ -11,9 +11,13 @@ import socket
 import time
 import struct
 import pickle
+from geopy.geocoders import Nominatim
+from geopy import distance
 
 msg = {}
 HEADERSIZE = 10
+latitude = 0
+longitude = 0
 
 def ip_is_local(ip_string):
     """
@@ -120,6 +124,12 @@ def drop_multicast_membership(my_socket, multicast_ip):
     # Leave group
     my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, membership_request)
 
+def calculateDist(msg_loc):
+    global latitude, longitude
+    myloc = (latitude,longitude)
+    dis = distance.distance(msg_loc,myloc).meters
+    return dis
+
 def listen_loop(multicast_ip, port):
     my_socket = create_socket(multicast_ip, port)
 
@@ -133,14 +143,22 @@ def listen_loop(multicast_ip, port):
             #       subscribed to the multicast group.
             data, address = my_socket.recvfrom(4096)
             msg = pickle.loads(data)
+            msg_loc = (msg["lat"],msg["long"])
+            dist = calculateDist(msg_loc)
             msg["hop"] += 1
-            if int(msg["hop"]) < 4:
-                if str(msg["des"]) == your_IP:
-                    print ("< %s > says '%s'" % (msg["sender"], msg["message"]))
+
+            if dist < 500:
+                if int(msg["hop"]) < 4:
+                    if str(msg["des"]) == your_IP:
+                        print ("< %s > says '%s'" % (msg["sender"], msg["message"]))
+                    else:
+                        print("You got message, but it's not for you :)")
                 else:
-                    print("You got message, but it's not for you :)")
+                    print("message exceed max_hop")
+                    msg.clear()
             else:
-                print("message exceed max_hop")
+                print("The dist is too far")
+                msg.clear()
             break
 
 def announce_loop(multicast_ip, port):
@@ -148,6 +166,7 @@ def announce_loop(multicast_ip, port):
     my_socket = create_socket(multicast_ip, port + 1)
     global msg
     global your_IP
+    global latitude, longitude
 
     # NOTE: Announcing every second, as this loop does, is WAY aggressive. 30 - 60 seconds is usually
     #       plenty frequent for most purposes.
@@ -159,6 +178,8 @@ def announce_loop(multicast_ip, port):
             message["message"] = input("Enter your message: ")
             message["des"] = input("Enter your destination: ")
             message["hop"] = 0
+            message["long"] = longitude
+            message["lat"] = latitude
         else:
             message = msg
 
@@ -177,8 +198,16 @@ if __name__ == '__main__':
     # sent to that multicast IP will be echoed to any subscribed machine.
     multicast_address = "224.3.29.71"
     multicast_port = 1234
+    
     IP = input("Enter your IP: ")
     your_IP = IP
+
+    geolocator = Nominatim(user_agent="specify_your_app_name_here")
+    location = input("Enter your location: ")
+    loc = geolocator.geocode(location)
+
+    longitude = loc.longitude
+    latitude = loc.latitude
 
     while True:
         print("1.Listen")
