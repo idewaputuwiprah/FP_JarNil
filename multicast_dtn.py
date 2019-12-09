@@ -63,41 +63,66 @@ def get_local_ip():
             temp_socket.close()
     return local_ip
 
-def create_socket(multicast_ip, port):
-    """
-    Creates a socket, sets the necessary options on it, then binds it. The socket is then returned for use.
-    """
+# def create_socket(multicast_ip, port):
+#     """
+#     Creates a socket, sets the necessary options on it, then binds it. The socket is then returned for use.
+#     """
 
-    # local_ip = get_local_ip()
-    local_ip = '192.168.137.1'
+#     # local_ip = get_local_ip()
+#     local_ip = '192.168.137.1'
 
-    # create a UDP socket
+#     # create a UDP socket
+#     my_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+#     # allow reuse of addresses
+#     my_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+#     # set multicast interface to local_ip
+#     my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(local_ip))
+
+#     # Set multicast time-to-live to 2...should keep our multicast packets from escaping the local network
+#     my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+
+#     # Construct a membership request...tells router what multicast group we want to subscribe to
+#     membership_request = socket.inet_aton(multicast_ip) + socket.inet_aton(local_ip)
+
+#     # Send add membership request to socket
+#     # See http://www.tldp.org/HOWTO/Multicast-HOWTO-6.html for explanation of sockopts
+#     my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership_request)
+
+#     # Bind the socket to an interface.
+#     # If you bind to a specific interface on the Mac, no multicast data will arrive.
+#     # If you try to bind to all interfaces on Windows, no multicast data will arrive.
+#     # Hence the following.
+#     if sys.platform.startswith("darwin"):
+#         my_socket.bind(('0.0.0.0', port))
+#     else:
+#         my_socket.bind(('', port))
+
+#     return my_socket
+
+def connect_socket(multicast_ip, port):
     my_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    # allow reuse of addresses
+    my_socket.settimeout(0.2)
+
+    ttl = struct.pack('b', 1)
+    my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
+
+    return my_socket
+
+def create_socket(multicast_ip, port):
+    server_address = ('', port)
+
+    my_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
     my_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-    # set multicast interface to local_ip
-    my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(local_ip))
+    my_socket.bind(server_address)
 
-    # Set multicast time-to-live to 2...should keep our multicast packets from escaping the local network
-    my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-
-    # Construct a membership request...tells router what multicast group we want to subscribe to
-    membership_request = socket.inet_aton(multicast_ip) + socket.inet_aton(local_ip)
-
-    # Send add membership request to socket
-    # See http://www.tldp.org/HOWTO/Multicast-HOWTO-6.html for explanation of sockopts
-    my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership_request)
-
-    # Bind the socket to an interface.
-    # If you bind to a specific interface on the Mac, no multicast data will arrive.
-    # If you try to bind to all interfaces on Windows, no multicast data will arrive.
-    # Hence the following.
-    if sys.platform.startswith("darwin"):
-        my_socket.bind(('0.0.0.0', port))
-    else:
-        my_socket.bind((local_ip, port))
+    group = socket.inet_aton(multicast_ip)
+    myreq = struct.pack('4sL', group, socket.INADDR_ANY)
+    my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, myreq)
 
     return my_socket
 
@@ -130,11 +155,20 @@ def calculateDist(msg_loc):
     dis = distance.distance(msg_loc,myloc).meters
     return dis
 
+def get_IP(my_socket):
+    try: 
+        host_name = socket.gethostname() 
+        host_ip = socket.gethostbyname(host_name)
+        return host_ip
+    except: 
+        print("Unable to get Hostname and IP") 
+        return 0
+
+
 def listen_loop(multicast_ip, port):
     my_socket = create_socket(multicast_ip, port)
 
     global msg
-    global your_IP
 
     while True:
             # Data waits on socket buffer until we retrieve it.
@@ -146,10 +180,11 @@ def listen_loop(multicast_ip, port):
             msg_loc = (msg["lat"],msg["long"])
             dist = calculateDist(msg_loc)
             msg["hop"] += 1
+            your_ip = get_IP(my_socket)
 
             if dist < 500:
                 if int(msg["hop"]) < 4:
-                    if str(msg["des"]) == your_IP:
+                    if str(msg["des"]) == your_ip:
                         print ("< %s > says '%s'" % (msg["sender"], msg["message"]))
                     else:
                         print("You got message, but it's not for you :)")
@@ -163,10 +198,10 @@ def listen_loop(multicast_ip, port):
 
 def announce_loop(multicast_ip, port):
     # Offset the port by one so that we can send and receive on the same machine
-    my_socket = create_socket(multicast_ip, port + 1)
+    my_socket = connect_socket(multicast_ip, port)
     global msg
-    global your_IP
     global latitude, longitude
+    your_ip = get_IP(my_socket)
 
     # NOTE: Announcing every second, as this loop does, is WAY aggressive. 30 - 60 seconds is usually
     #       plenty frequent for most purposes.
@@ -174,7 +209,7 @@ def announce_loop(multicast_ip, port):
         # Just sending Unix time as a message
         if not msg:
             message = {}
-            message["sender"] = your_IP
+            message["sender"] = your_ip
             message["message"] = input("Enter your message: ")
             message["des"] = input("Enter your destination: ")
             message["hop"] = 0
@@ -189,18 +224,13 @@ def announce_loop(multicast_ip, port):
         # time.sleep(1)
         break
 
-your_IP = ""
-
 if __name__ == '__main__':
     # Choose an arbitrary multicast IP and port.
     # 239.255.0.0 - 239.255.255.255 are for local network multicast use.
     # Remember, you subscribe to a multicast IP, not a port. All data from all ports
     # sent to that multicast IP will be echoed to any subscribed machine.
-    multicast_address = "224.3.29.71"
-    multicast_port = 1234
-    
-    IP = input("Enter your IP: ")
-    your_IP = IP
+    multicast_address = "224.0.0.1"
+    multicast_port = 10000
 
     geolocator = Nominatim(user_agent="specify_your_app_name_here")
     location = input("Enter your location: ")
