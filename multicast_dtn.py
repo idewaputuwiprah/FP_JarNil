@@ -13,11 +13,14 @@ import struct
 import pickle
 from geopy.geocoders import Nominatim
 from geopy import distance
+import datetime
+import threading
 
 msg = {}
 HEADERSIZE = 10
 latitude = 0
 longitude = 0
+now = datetime.datetime.now()
 
 def ip_is_local(ip_string):
     """
@@ -164,11 +167,31 @@ def get_IP(my_socket):
         print("Unable to get Hostname and IP") 
         return 0
 
+def time_pc():
+    time = datetime.datetime.now()
+    return time
+
+def time_msg():
+    while True:
+        global msg
+        while not msg:
+            pass
+        global now
+        while msg:
+            nextt = time_pc()
+            dif = nextt - now
+            minutes = dif.seconds / 60
+            # print(minutes)
+            if minutes >= 1.0:
+                print("the message is expired")
+                msg = {}
+
 
 def listen_loop(multicast_ip, port):
     my_socket = create_socket(multicast_ip, port)
 
     global msg
+    global now
 
     while True:
             # Data waits on socket buffer until we retrieve it.
@@ -177,6 +200,7 @@ def listen_loop(multicast_ip, port):
             #       subscribed to the multicast group.
             data, address = my_socket.recvfrom(4096)
             msg = pickle.loads(data)
+            now = time_pc()
             msg_loc = (msg["lat"],msg["long"])
             dist = calculateDist(msg_loc)
             msg["hop"] += 1
@@ -231,6 +255,10 @@ if __name__ == '__main__':
     # sent to that multicast IP will be echoed to any subscribed machine.
     multicast_address = "224.0.0.1"
     multicast_port = 10000
+
+    time_now = threading.Thread(target=time_msg)
+    time_now.daemon = True
+    time_now.start()
 
     geolocator = Nominatim(user_agent="specify_your_app_name_here")
     location = input("Enter your location: ")
