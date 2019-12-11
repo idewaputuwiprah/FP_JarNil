@@ -21,50 +21,10 @@ HEADERSIZE = 10
 latitude = 0
 longitude = 0
 now = datetime.datetime.now()
+name = ""
+expired = False
+sending = False
 
-def ip_is_local(ip_string):
-    """
-    Uses a regex to determine if the input ip is on a local network. Returns a boolean. 
-    It's safe here, but never use a regex for IP verification if from a potentially dangerous source.
-    """
-    combined_regex = "(^10\.)|(^172\.1[6-9]\.)|(^172\.2[0-9]\.)|(^172\.3[0-1]\.)|(^192\.168\.)"
-    return re.match(combined_regex, ip_string) is not None # is not None is just a sneaky way of converting to a boolean
-
-
-def get_local_ip():
-    """
-    Returns the first externally facing local IP address that it can find.
-    Even though it's longer, this method is preferable to calling socket.gethostbyname(socket.gethostname()) as
-    socket.gethostbyname() is deprecated. This also can discover multiple available IPs with minor modification.
-    We excludes 127.0.0.1 if possible, because we're looking for real interfaces, not loopback.
-    Some linuxes always returns 127.0.1.1, which we don't match as a local IP when checked with ip_is_local().
-    We then fall back to the uglier method of connecting to another server.
-    """
-
-    # socket.getaddrinfo returns a bunch of info, so we just get the IPs it returns with this list comprehension.
-    local_ips = [ x[4][0] for x in socket.getaddrinfo(socket.gethostname(), 80)
-                  if ip_is_local(x[4][0]) ]
-
-    # select the first IP, if there is one.
-    local_ip = local_ips[0] if len(local_ips) > 0 else None
-
-    # If the previous method didn't find anything, use this less desirable method that lets your OS figure out which
-    # interface to use.
-    if not local_ip:
-        # create a standard UDP socket ( SOCK_DGRAM is UDP, SOCK_STREAM is TCP )
-        temp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            # Open a connection to one of Google's DNS servers. Preferably change this to a server in your control.
-            temp_socket.connect(('8.8.8.8', 9))
-            # Get the interface used by the socket.
-            local_ip = temp_socket.getsockname()[0]
-        except socket.error:
-            # Only return 127.0.0.1 if nothing else has been found.
-            local_ip = "127.0.0.1"
-        finally:
-            # Always dispose of sockets when you're done!
-            temp_socket.close()
-    return local_ip
 
 # def create_socket(multicast_ip, port):
 #     """
@@ -104,6 +64,7 @@ def get_local_ip():
 
 #     return my_socket
 
+
 def connect_socket(multicast_ip, port):
     my_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -113,6 +74,7 @@ def connect_socket(multicast_ip, port):
     my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
 
     return my_socket
+
 
 def create_socket(multicast_ip, port):
     server_address = ('', port)
@@ -129,54 +91,36 @@ def create_socket(multicast_ip, port):
 
     return my_socket
 
-def get_bound_multicast_interface(my_socket):
-    """
-    Returns the IP address (probably your local IP) that the socket is bound to for multicast.
-    Note that this may not be the same address you bound to manually if you specified 0.0.0.0.
-    This isn't used here, just a useful utility method.
-    """
-    response = my_socket.getsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF)
-    socket.inet_ntoa(struct.pack('i', response))
-
-def drop_multicast_membership(my_socket, multicast_ip):
-    """
-    Drops membership to the specified multicast group without closing the socket.
-    Note that this happens automatically (done by the kernel) if the socket is closed.
-    """
-
-    local_ip = get_local_ip()
-
-    # Must reconstruct the same request used when adding the membership initially
-    membership_request = socket.inet_aton(multicast_ip) + socket.inet_aton(local_ip)
-
-    # Leave group
-    my_socket.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, membership_request)
 
 def calculateDist(msg_loc):
     global latitude, longitude
-    myloc = (latitude,longitude)
-    dis = distance.distance(msg_loc,myloc).meters
+    myloc = (latitude, longitude)
+    dis = distance.distance(msg_loc, myloc).meters
     return dis
 
+
 def get_IP(my_socket):
-    try: 
-        host_name = socket.gethostname() 
+    try:
+        host_name = socket.gethostname()
         host_ip = socket.gethostbyname(host_name)
         return host_ip
-    except: 
-        print("Unable to get Hostname and IP") 
+    except:
+        print("Unable to get Hostname and IP")
         return 0
+
 
 def time_pc():
     time = datetime.datetime.now()
     return time
 
+
 def time_msg():
     while True:
         global msg
         while not msg:
-            pass
+            continue
         global now
+        global expired
         while msg:
             nextt = time_pc()
             dif = nextt - now
@@ -184,69 +128,103 @@ def time_msg():
             # print(minutes)
             if minutes >= 1.0:
                 print("the message is expired")
+                expired = True
                 msg = {}
 
+def send_loop(multicast_ip, port):
+    my_socket = connect_socket(multicast_ip, port)
+    global expired
+    
+    while True:
+        global msg
+        global sending
+        sending = False
+        while not sending:
+            continue
+        while not expired:
+            temp = pickle.dumps(msg)
+            my_socket.sendto(temp, (multicast_ip, port))
+        if expired:
+            print("destroying this thread...")
+            break
 
 def listen_loop(multicast_ip, port):
     my_socket = create_socket(multicast_ip, port)
 
     global msg
     global now
+    global name
+    global sending
 
     while True:
+        while sending:
+            continue
+        
+        if expired:
+            break
             # Data waits on socket buffer until we retrieve it.
             # NOTE: Normally, you would want to compare the incoming data's source address to your own, and filter it out
             #       if it came rom the current machine. Everything you send gets echoed back at you if your socket is
             #       subscribed to the multicast group.
-            data, address = my_socket.recvfrom(4096)
-            msg = pickle.loads(data)
-            now = time_pc()
-            msg_loc = (msg["lat"],msg["long"])
-            dist = calculateDist(msg_loc)
-            msg["hop"] += 1
-            your_ip = get_IP(my_socket)
+        data, address = my_socket.recvfrom(4096)
+        msg = pickle.loads(data)
+        now = msg["time"]
+        msg_loc = (msg["lat"], msg["long"])
+        dist = calculateDist(msg_loc)
+        msg["hop"] += 1
 
+        if msg["sender"] != name:
             if dist < 500:
                 if int(msg["hop"]) < 4:
-                    if str(msg["des"]) == your_ip:
-                        print ("< %s > says '%s'" % (msg["sender"], msg["message"]))
+                    if str(msg["des"]) == name:
+                        print("< %s > says '%s'" % (msg["sender"], msg["message"]))
                     else:
                         print("You got message, but it's not for you :)")
                 else:
                     print("message exceed max_hop")
-                    msg.clear()
+                    msg = {}
             else:
                 print("The dist is too far")
-                msg.clear()
-            break
+                msg = {}
+            
+            sending = True
 
 def announce_loop(multicast_ip, port):
     # Offset the port by one so that we can send and receive on the same machine
     my_socket = connect_socket(multicast_ip, port)
     global msg
+    global name
+    global now
     global latitude, longitude
-    your_ip = get_IP(my_socket)
+    
 
     # NOTE: Announcing every second, as this loop does, is WAY aggressive. 30 - 60 seconds is usually
     #       plenty frequent for most purposes.
     while True:
+        now = time_pc()
         # Just sending Unix time as a message
         if not msg:
             message = {}
-            message["sender"] = your_ip
+            message["sender"] = name
             message["message"] = input("Enter your message: ")
             message["des"] = input("Enter your destination: ")
             message["hop"] = 0
             message["long"] = longitude
             message["lat"] = latitude
-        else:
-            message = msg
+            message["time"] = now
 
         # Send data. Destination must be a tuple containing the ip and port.
         temp = pickle.dumps(message)
         my_socket.sendto(temp, (multicast_ip, port))
         # time.sleep(1)
         break
+
+def init_listen():
+    # print("success created")
+    while True:
+        while not expired:
+            continue
+        exit("message already expired")
 
 if __name__ == '__main__':
     # Choose an arbitrary multicast IP and port.
@@ -256,9 +234,7 @@ if __name__ == '__main__':
     multicast_address = "224.0.0.1"
     multicast_port = 10000
 
-    time_now = threading.Thread(target=time_msg)
-    time_now.daemon = True
-    time_now.start()
+    name = input("Enter your name: ")
 
     geolocator = Nominatim(user_agent="specify_your_app_name_here")
     location = input("Enter your location: ")
@@ -267,10 +243,27 @@ if __name__ == '__main__':
     longitude = loc.longitude
     latitude = loc.latitude
 
+    init_awal = threading.Thread(target=init_listen)
+    init_awal.daemon = True
+    init_awal.start()
+
+    time_now = threading.Thread(target=time_msg)
+    time_now.daemon = True
+    time_now.start()
+
+    receive = threading.Thread(target=listen_loop,args=(multicast_address,multicast_port))
+    receive.daemon = True
+    receive.start()
+
+    send = threading.Thread(target=send_loop,args=(multicast_address,multicast_port))
+    send.daemon = True
+    send.start()
+
+
     while True:
-        print("1.Listen")
-        print("2.Announce")
-        print("3.Exit")
+
+        print("1.Announce")
+        print("2.Exit")
         c = input("~")
 
     # When launching this example, you can choose to put it in listen or announce mode.
@@ -282,8 +275,6 @@ if __name__ == '__main__':
     # so the code in create_socket() will apply more directly.
 
         if int(c) == 1:
-            listen_loop(multicast_address, multicast_port)
-        elif int(c) == 2:
             announce_loop(multicast_address, multicast_port)
         else:
             exit("Run 'multicast_example.py listen' or 'multicast_example.py announce'.")
